@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from groq import Groq
 from sqlalchemy import text
 
-from database import readonly_engine
+from .database import readonly_engine
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -183,11 +183,20 @@ Rules:
             if not rows:
                 return "📭 No results found. Try rephrasing."
 
-            result_text = f"Columns: {', '.join(columns)}\n"
-            for row in rows[:50]:
-                result_text += f"  {row}\n"
+            # Rank labels Python mein khud compute karo — LLM ko compare karne ki
+            # zaroorat hi na pade, sirf describe kare
+            limited_rows = rows[:50]
+            ranked_result_text = f"Columns: {', '.join(columns)}\n"
+            for idx, row in enumerate(limited_rows, start=1):
+                label = ""
+                if len(limited_rows) > 1:
+                    if idx == 1:
+                        label = " (HIGHEST/TOP)"
+                    elif idx == len(limited_rows):
+                        label = " (LOWEST/BOTTOM)"
+                ranked_result_text += f"  Rank {idx}: {row}{label}\n"
             if len(rows) > 50:
-                result_text += f"  ... and {len(rows) - 50} more rows\n"
+                ranked_result_text += f"  ... and {len(rows) - 50} more rows\n"
 
         except Exception as e:
             logger.error(f"Query execution error: {e}")
@@ -198,13 +207,14 @@ Rules:
 
 Question: "{user_question}"
 SQL: {sql_query}
-Results:
-{result_text}
+Results (already ranked by the SQL query, Rank 1 = first row):
+{ranked_result_text}
 
 Rules:
 - Clear, friendly English for a non-technical user.
+- Use the rank labels (HIGHEST/LOWEST) exactly as given — do not recalculate or reorder them yourself.
+- Do NOT mention SQL or the word "rank" in your answer.
 - Include specific numbers.
-- Do NOT mention SQL.
 """
             return _call_llm_with_retry(self._client, answer_prompt)
         except Exception as e:

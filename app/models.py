@@ -1,6 +1,6 @@
 from datetime import date
 from sqlalchemy import Column, Integer, String, Date,Numeric, ForeignKey
-from database import Base
+from .database import Base
 
 class Employee(Base):
     __tablename__ = "employees"

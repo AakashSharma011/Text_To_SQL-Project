@@ -1,6 +1,6 @@
 import random
 from datetime import date, timedelta
-from database import admin_engine, AdminSession,Base
+from .database import admin_engine, AdminSession,Base
 from sqlalchemy.orm import Session
 from models import Employee, Sale, Order
 
