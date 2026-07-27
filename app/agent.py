@@ -18,6 +18,7 @@ MODEL_NAME = "llama-3.3-70b-versatile"
 MAX_RETRIES = 3
 INITIAL_BACKOFF_SECONDS = 10
 LLM_TIMEOUT = 30
+MAX_CORRECTION_ATTEMPTS = 2
 
 _BLOCKED_SQL = re.compile(
     r"\b(DROP|DELETE|UPDATE|ALTER|TRUNCATE|INSERT|REPLACE|CREATE|GRANT|REVOKE)\b",
@@ -132,6 +133,50 @@ class SQLAgent:
         self._initialized = True
         logger.info("SQL Agent initialized.")
 
+    def _execute_sql_with_correction(self, sql_query: str, user_question: str):
+        """SQL execute karta hai; fail hone par LLM se error context ke saath fix karwata hai."""
+        current_sql = sql_query
+        last_error = None
+
+        for attempt in range(MAX_CORRECTION_ATTEMPTS + 1):
+            safety_check = _validate_query_safety(current_sql)
+            if safety_check:
+                return None, None, safety_check
+
+            try:
+                with readonly_engine.connect() as conn:
+                    result = conn.execute(text(current_sql))
+                    columns = list(result.keys())
+                    rows = result.fetchall()
+                return current_sql, (columns, rows), None  # success
+
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"SQL attempt {attempt + 1} failed: {last_error}")
+
+                if attempt < MAX_CORRECTION_ATTEMPTS:
+                    correction_prompt = f"""This PostgreSQL query failed:
+
+{current_sql}
+
+Error: {last_error}
+
+Schema:
+{self._schema}
+
+Original question: "{user_question}"
+
+Fix the query. Return ONLY the corrected SQL SELECT query, no explanation.
+"""
+                    try:
+                        correction_response = _call_llm_with_retry(self._client, correction_prompt)
+                        current_sql = _extract_sql(correction_response)
+                        logger.info(f"Corrected SQL (attempt {attempt + 2}): {current_sql}")
+                    except Exception:
+                        break
+
+        return None, None, f"❌ Query failed after {MAX_CORRECTION_ATTEMPTS + 1} attempts. Last error: {last_error}"
+
     def query(self, user_question: str) -> str:
         input_error = _validate_input(user_question)
         if input_error:
@@ -174,45 +219,45 @@ Rules:
             logger.error(f"SQL generation error: {e}")
             return f"❌ Error generating query: {e}"
 
-        try:
-            with readonly_engine.connect() as conn:
-                result = conn.execute(text(sql_query))
-                columns = list(result.keys())
-                rows = result.fetchall()
+        final_sql, execution_result, error = self._execute_sql_with_correction(sql_query, user_question)
+        if error:
+            return error
 
-            if not rows:
-                return "📭 No results found. Try rephrasing."
+        columns, rows = execution_result
+        sql_query = final_sql
 
-            # Rank labels Python mein khud compute karo — LLM ko compare karne ki
-            # zaroorat hi na pade, sirf describe kare
-            limited_rows = rows[:50]
-            ranked_result_text = f"Columns: {', '.join(columns)}\n"
-            for idx, row in enumerate(limited_rows, start=1):
-                label = ""
-                if len(limited_rows) > 1:
-                    if idx == 1:
-                        label = " (HIGHEST/TOP)"
-                    elif idx == len(limited_rows):
-                        label = " (LOWEST/BOTTOM)"
-                ranked_result_text += f"  Rank {idx}: {row}{label}\n"
-            if len(rows) > 50:
-                ranked_result_text += f"  ... and {len(rows) - 50} more rows\n"
+        if not rows:
+            return "📭 No results found. Try rephrasing."
 
-        except Exception as e:
-            logger.error(f"Query execution error: {e}")
-            return f"❌ Database error: {e}. Try rephrasing your question."
+        # Sirf tabhi HIGHEST/LOWEST label lagao jab SQL mein khud ORDER BY ho —
+        # warna first/last row ka amount se koi lena-dena nahi hota
+        has_order_by = "ORDER BY" in sql_query.upper()
+
+        limited_rows = rows[:50]
+        ranked_result_text = f"Columns: {', '.join(columns)}\n"
+        for idx, row in enumerate(limited_rows, start=1):
+            label = ""
+            if has_order_by and len(limited_rows) > 1:
+                if idx == 1:
+                    label = " (HIGHEST/TOP based on sort order)"
+                elif idx == len(limited_rows):
+                    label = " (LOWEST/BOTTOM based on sort order)"
+            ranked_result_text += f"  Row {idx}: {row}{label}\n"
+        if len(rows) > 50:
+            ranked_result_text += f"  ... and {len(rows) - 50} more rows\n"
 
         try:
             answer_prompt = f"""Based on this SQL query and results, give a clear English answer.
 
 Question: "{user_question}"
 SQL: {sql_query}
-Results (already ranked by the SQL query, Rank 1 = first row):
+Results:
 {ranked_result_text}
 
 Rules:
 - Clear, friendly English for a non-technical user.
-- Use the rank labels (HIGHEST/LOWEST) exactly as given — do not recalculate or reorder them yourself.
+- If HIGHEST/LOWEST labels are present in the results, use them exactly as given — do not recalculate or reorder them yourself.
+- If NO such labels are present, simply describe the data without claiming anything is "highest" or "lowest".
 - Do NOT mention SQL or the word "rank" in your answer.
 - Include specific numbers.
 """
