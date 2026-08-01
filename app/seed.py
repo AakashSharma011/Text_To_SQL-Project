@@ -2,7 +2,8 @@ import random
 from datetime import date, timedelta
 from .database import admin_engine, AdminSession,Base
 from sqlalchemy.orm import Session
-from models import Employee, Sale, Order
+from .models import Employee, Sale, Order , User 
+from .security import hash_password 
 
 FIRST_NAMES = ["Aarav", "Priya", "Rahul", "Sneha", "Vikram", "Ananya", "Rohan", "Meera"]
 LAST_NAMES = ["Sharma", "Patel", "Gupta", "Singh", "Kumar", "Verma"]
@@ -52,6 +53,16 @@ def _seed_orders(session: Session, count: int = 30) -> None:
             order_date=_random_date(date(2024, 1, 1), date(2025, 12, 31)),
         ))
 
+def _seed_users(session: Session) -> None:
+    users = [
+        User(username="admin", hashed_password=hash_password("admin123"), role="admin"),
+        User(username="testuser", hashed_password=hash_password("user123"), role="user"),
+    ]
+    session.add_all(users)
+
+
+
+
 def run_seed() -> None:
     Base.metadata.create_all(admin_engine)  # tables banao agar exist nahi karte
     with AdminSession() as session:
@@ -62,6 +73,7 @@ def run_seed() -> None:
         emp_ids = _seed_employees(session)
         _seed_sales(session, emp_ids)
         _seed_orders(session)
+        _seed_users(session)
         session.commit()
         print("Seed done: 25 employees, 40 sales, 30 orders.")
 
