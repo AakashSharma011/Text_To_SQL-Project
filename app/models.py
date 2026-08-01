@@ -26,3 +26,11 @@ class Order(Base):
     customer_name = Column(String(100), nullable=False)
     order_amount = Column(Numeric(10, 2), nullable=False)
     order_date = Column(Date, nullable=False)
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(50), unique=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    role = Column(String(20), nullable=False, default="user") 

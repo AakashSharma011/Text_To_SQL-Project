@@ -6,6 +6,7 @@ import time
 from dotenv import load_dotenv
 from groq import Groq
 from sqlalchemy import text
+from .cache import _get_cached_answer, set_cached_answer
 
 from .database import readonly_engine
 
@@ -182,6 +183,12 @@ Fix the query. Return ONLY the corrected SQL SELECT query, no explanation.
         if input_error:
             return input_error
 
+        # Cache check — sabse pehle, LLM call se pehle
+        cached = _get_cached_answer(user_question)
+        if cached:
+            logger.info("Cache hit — LLM call skip ho gaya")
+            return cached
+
         try:
             self._ensure_initialized()
         except Exception as e:
@@ -229,8 +236,6 @@ Rules:
         if not rows:
             return "📭 No results found. Try rephrasing."
 
-        # Sirf tabhi HIGHEST/LOWEST label lagao jab SQL mein khud ORDER BY ho —
-        # warna first/last row ka amount se koi lena-dena nahi hota
         has_order_by = "ORDER BY" in sql_query.upper()
 
         limited_rows = rows[:50]
@@ -261,7 +266,9 @@ Rules:
 - Do NOT mention SQL or the word "rank" in your answer.
 - Include specific numbers.
 """
-            return _call_llm_with_retry(self._client, answer_prompt)
+            final_answer = _call_llm_with_retry(self._client, answer_prompt)
+            set_cached_answer(user_question, final_answer)
+            return final_answer
         except Exception as e:
             logger.error(f"Answer generation error: {e}")
             return f"❌ Error generating answer: {e}"
