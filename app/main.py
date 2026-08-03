@@ -5,26 +5,42 @@ from fastapi.security import OAuth2PasswordBearer,OAuth2PasswordRequestForm
 from jose import JWTError,jwt
 from .security import decode_access_token ,verify_password,create_access_token
 from .models import User
-from .database import AdminSession
+from .database import AdminSession, admin_engine, Base
+from .seed import run_seed
 from sqlalchemy import select
 from .security import hash_password
+from fastapi.middleware.cors import CORSMiddleware
 
 
 app = FastAPI(title="AI Business Data Assistant")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://text-to-sql-frontend-nu.vercel.app"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
-
 class QueryRequest(BaseModel):
-    question:str
+    question: str
 
 class QueryResponse(BaseModel):
-    answer:str
+    answer: str
 
 class RegisterRequest(BaseModel):
     username: str
     password: str
+
+
+def _init_db_if_needed():
+    try:
+        run_seed()
+    except Exception:
+        pass
+
 
 @app.post("/register")
 def register(payload: RegisterRequest):
@@ -32,6 +48,8 @@ def register(payload: RegisterRequest):
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters.")
     if len(payload.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+
+    _init_db_if_needed()
 
     with AdminSession() as session:
         existing = session.execute(
@@ -70,6 +88,7 @@ def health_check():
 
 @app.post("/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    _init_db_if_needed()
     with AdminSession() as session:
         user = session.execute(
             select(User).where(User.username == form_data.username)

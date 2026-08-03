@@ -5,8 +5,8 @@ import time
 
 from dotenv import load_dotenv
 from groq import Groq
-from sqlalchemy import text
-from .cache import _get_cached_answer, set_cached_answer
+from sqlalchemy import text, inspect
+from .cache import get_cached_answer, set_cached_answer
 
 from .database import readonly_engine
 
@@ -35,27 +35,30 @@ def _resolve_api_key() -> str:
 
 
 def _get_schema_info() -> str:
-    """Postgres se schema + sample rows padhta hai (information_schema use karke)."""
+    """Database-agnostic schema reflection for Postgres, SQLite, etc."""
     schema_parts = []
     with readonly_engine.connect() as conn:
-        tables = conn.execute(text(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
-        )).fetchall()
+        inspector = inspect(conn)
+        table_names = inspector.get_table_names()
 
-        for (table,) in tables:
-            cols = conn.execute(text(
-                "SELECT column_name, data_type FROM information_schema.columns "
-                "WHERE table_name = :t"
-            ), {"t": table}).fetchall()
+        for table in table_names:
+            if table.startswith("sqlite_"):
+                continue
 
+            cols = inspector.get_columns(table)
             schema_parts.append(f"-- Table: {table}")
-            for col_name, data_type in cols:
+            for col in cols:
+                col_name = col.get("name")
+                data_type = str(col.get("type"))
                 schema_parts.append(f"--   {col_name} ({data_type})")
 
-            rows = conn.execute(text(f"SELECT * FROM {table} LIMIT 3")).fetchall()
-            schema_parts.append(f"-- Sample rows:")
-            for row in rows:
-                schema_parts.append(f"--   {row}")
+            try:
+                rows = conn.execute(text(f"SELECT * FROM {table} LIMIT 3")).fetchall()
+                schema_parts.append(f"-- Sample rows:")
+                for row in rows:
+                    schema_parts.append(f"--   {row}")
+            except Exception:
+                pass
             schema_parts.append("")
 
     return "\n".join(schema_parts)
@@ -184,7 +187,7 @@ Fix the query. Return ONLY the corrected SQL SELECT query, no explanation.
             return input_error
 
         # Cache check — sabse pehle, LLM call se pehle
-        cached = _get_cached_answer(user_question)
+        cached = get_cached_answer(user_question)
         if cached:
             logger.info("Cache hit — LLM call skip ho gaya")
             return cached
